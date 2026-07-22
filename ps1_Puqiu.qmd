@@ -1,0 +1,142 @@
+---
+title: "ps1_Puqiu"
+author: "Puqiu Zhao"
+format: html
+editor: visual
+---
+
+```{r}
+#| message: false 
+library(tidyverse)
+```
+
+## Part 1
+
+Build the table
+
+```{r}
+unit <- c(1:5) 
+Y_i1 <- c(8, 6, 3, 5, 2) 
+Y_i0 <- c(4, 5, 3, 7, 6) 
+D_i <- c(1, 1, 0, 0, 0) 
+table_1 <- tibble(unit, Y_i1, Y_i0, D_i)
+table_1
+```
+
+### Q1: Compute $\tau_i$ for each unit and the $\textbf{ATE}$
+
+```{r}
+table_1 <- table_1 |> mutate(tau_i = Y_i1 - Y_i0)
+table_1
+table_1 |> 
+  summarise(ATE = mean(tau_i))
+```
+
+### Q2: Compute $\textbf{ATT}$ and $\textbf{ATC}$
+
+```{r}
+#ATT
+table_1 |> 
+  filter(D_i == 1) |> 
+  summarise(ATT = mean(tau_i))
+
+#ATC
+table_1 |> 
+  filter(D_i == 0) |> 
+  summarise(ATC = mean(tau_i))
+```
+
+### Q3: Using switching equation, compute observed $DiM$
+
+```{r}
+#switching equation
+table_1 <- table_1 |> 
+  mutate(Y_obs = D_i * Y_i1 + (1- D_i) * Y_i0)
+
+#DiM
+table_1 |> 
+  summarise(DiM = mean(Y_obs[D_i == 1]) - mean(Y_obs[D_i == 0]))
+```
+
+### Q4: Is DiM too big? Too small? Identify selection bias
+
+The $DiM$ is $1.67$, which is too big. The $ATE$ is $-0.2$. Therefore, there is a selection bias.
+
+## Part 2
+
+### Q1: DAG graph
+
+$$ D \leftarrow M \rightarrow Y $$ $$ D \rightarrow Y $$
+
+The backdoor path is $D \leftarrow M$ and $M \rightarrow Y$
+
+### Q2: confounder
+
+### Q3: What should you condition on to satisfy backdoor criterion?
+
+To satisfy the backdoor criterion, we should condition on $M$. Conditioning on $M$ can block the backdoor path $D \leftarrow M \rightarrow Y$.
+
+### Q4: If $M$ is unobserved, what are your options?
+
+We can conduct a randomized controlled trial (RCT) to eliminate the confounding effect of prior motivation ($M$). By randomly assigning individuals to the job training program, the treatment becomes independent of prior motivation, therefore blocking the backdoor path.
+
+## Part 3
+
+### Q1:
+
+```{r}
+patients <- tibble(
+id = 1:10,
+y1 = c(7, 5, 5, 7, 4, 10, 1, 5, 3, 9), # Y(1)
+y0 = c(1, 6, 1, 8, 2, 1, 10, 6, 7, 8) # Y(0)
+)
+# We know ATE = 0.6 from the perfect doctor
+#Randomly assign 7 to surgery, 3 to chemo — 10,000 times:
+set.seed(0818)
+n_reps <- 10000
+dim_vec <- numeric(n_reps)
+
+for (r in 1:n_reps){
+  d <- sample(c(rep(1, 7), rep(0, 3))) #7 treated (surgery), 3 untreated (chemo)
+  y_obs <- d*patients$y1 + (1-d)*patients$y0 #switching equation
+  dim_vec[r] <- mean(y_obs[d == 1]) - mean(y_obs[d == 0]) #DiM
+}
+
+mean(dim_vec)
+sd(dim_vec)
+```
+
+Yes, $DiM$ is still approximately equal to the $ATE$.
+
+### Q2:
+
+```{r}
+patients_1 <- patients |> 
+  select(-y0) |> #remove old y0
+  mutate(y0_man = y1 - 0.6) #manually y0
+
+set.seed(0818)
+n_reps <- 10000
+dim_vec_man <- numeric(n_reps)
+
+for (r in 1:n_reps){
+  d <- sample(c(rep(1, 7), rep(0, 3)))
+  y_obs <- d*patients_1$y1 + (1-d)*patients_1$y0_man #switching equation
+  dim_vec_man[r] <- mean(y_obs[d == 1]) - mean(y_obs[d == 0]) #DiM
+}
+
+mean(dim_vec_man)
+sd(dim_vec_man)
+```
+
+We can compare the distributions of the DiM estimator before and after manually modifying the control group. Although the two distributions have similar means, their standard deviations differ. In particular, the distribution of the DiM estimator becomes more dispersed after the control group is manually altered.
+
+### Q3:
+
+```{r}
+d_bias <- as.integer(rank(-patients$y1) <= 5) #"-"5 largest values
+y_obs_bias <- d_bias*patients$y1 + (1-d_bias)*patients$y0
+dim_bias <- mean(y_obs_bias[d_bias == 1]) - mean(y_obs_bias[d_bias == 0])
+
+mean(dim_bias)
+```

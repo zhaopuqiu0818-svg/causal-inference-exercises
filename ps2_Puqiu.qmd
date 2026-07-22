@@ -1,0 +1,179 @@
+---
+title: "ps2_Puqiu"
+author: "Puqiu Zhao"
+format: html
+editor: visual
+---
+
+```{r}
+#| message: false
+library(tidyverse)
+library(MatchIt)
+library(cobalt)
+```
+
+## Part 1
+
+```{r}
+unit <- c(1:6)
+X <- c("A", "A", "A", "B", "B", "B")
+D <- c(1, 1, 0, 1, 0, 0)
+Y_obs <- c(8, 6, 5, 7, 4, 2)
+table_1 <- tibble(unit, X, D, Y_obs)
+table_1
+```
+
+### Q1: naive $DiM$
+
+```{r}
+table_1 |> 
+  summarise(DiM = mean(Y_obs[D == 1]) - mean(Y_obs[D == 0]))
+```
+
+### Q2: within-stratum effects
+
+```{r}
+# X == A
+DiM_A <- table_1 |> 
+  filter(X == "A") |> 
+  summarise(DiM_A = mean(Y_obs[D == 1]) - mean(Y_obs[D == 0])) |> 
+  pull(DiM_A)
+DiM_A
+
+# X == B
+DiM_B <- table_1 |> 
+  filter(X == "B") |> 
+  summarise(DiM_B = mean(Y_obs[D == 1]) - mean(Y_obs[D == 0])) |> 
+  pull(DiM_B)
+DiM_B
+```
+
+### Q3: subclassified $ATE$ weighted by the stratum size
+
+```{r}
+ATE <- sum(DiM_A*0.5 + DiM_B*0.5)
+ATE
+```
+
+### Q4: who is bigger?
+
+Naive $DiM$ is bigger than $ATE$. Because there is a confounding variable X leading to a selection bias, which will make $DiM$ bigger.
+
+## Part 2
+
+```{r}
+unit <- c("T1", "T2", "C1", "C2", "C3")
+treat <- c(1 ,1, 0, 0, 0)
+X <- c(3, 7, 2, 6, 8)
+Y_obs <- c(9, 6, 5, 4, 3)
+table_2 <- tibble(unit, treat, X, Y_obs)
+table_2
+```
+
+### Q1: For each treated unit, find the nearest control on $\textbf{X}$
+
+```{r}
+#matching
+match_1 <- matchit(
+  treat ~ X,
+  data = table_2,
+  method = "nearest",
+  distance = "mahalanobis"
+)
+
+#check balance
+love.plot(match_1, thresholds = c(m = 0.1), line = TRUE) #rule of the thumb
+
+#who match whom
+match_1$match.matrix
+```
+
+According to the matrix, $T1$ matches with $C1$, and $T2$ matches with $C3$.
+
+### Q2: Impute each treated unit’s $Y(0)$ from its match
+
+```{r}
+table_m <- table_2 |> 
+  filter(treat == 1) |> 
+  mutate(Y0 = c(5, 3)) #Y_obs_C1 = 5 and Y_obs_C3 = 3
+table_m
+```
+
+### Q3: Compute $\widehat{\textbf{ATT}}$
+
+```{r}
+ATT <- mean(table_m$Y_obs - table_m$Y0)
+ATT
+```
+
+### Q4：Is any match too far? What to do about it?
+
+Neither match is too far. T1 (X = 3) is matched to C1 (X = 2) with a distance of 1, and T2 (X = 7) is matched to C3 (X = 8) also with a distance of 1. Both matches are close on X. If a match exceeded the threshold, we'd impose a caliper (e.g., drop outliers) or match with replacement to find a closer control.
+
+### Q5: Abadie-Imbens corrections for imperfect match
+
+```{r}
+ctrl <- tibble(Y = c(5, 3), X = c(2, 8))
+coef(lm(Y ~ X, data = ctrl))
+```
+
+$$Y = 5.67 - 0.33X$$
+
+```{r}
+mu_T1 <- 5.67 - 0.33*3
+mu_T2 <- 5.67 - 0.33*7
+mu_C1 <- 5.67 - 0.33*2
+mu_C3 <- 5.67 - 0.33*8
+diffx <- c(mu_T1 - mu_C1, mu_T2 - mu_C3) #T1 matches with C1, T2 matches with C3
+diffx
+ATT_bc<- mean(table_m$Y_obs - table_m$Y0 - diffx) #Bias-corrected ATT
+ATT_bc
+```
+
+## Part 3
+
+```{r}
+#lalonde data
+data("lalonde", package = "cobalt")
+covs <- subset(lalonde, select = -c(treat, re78)) #which are the covariates
+```
+
+### Q1: Re-fit
+
+```{r}
+match.out.1 <- matchit(f.build("treat", covs), data = lalonde,
+method = "nearest", replace = TRUE)
+
+match.out.2 <- matchit(f.build("treat", covs), data = lalonde,
+method = "nearest", replace = FALSE) #the sample size will be lower
+```
+
+### Q2: Compare the Love plot to with-replacement version
+
+```{r}
+love.plot(match.out.1, thresholds = c(m = 0.1), line = TRUE) #plot with rep.
+love.plot(match.out.2, thresholds = c(m = 0.1), line = TRUE) #plot without rep.
+```
+
+### Q3: Add a caliper (e.g., caliper = 0.1). What happens to balance, and to number of matched units?
+
+```{r}
+match.out.3 <- matchit(f.build("treat", covs), data = lalonde,
+  method = "nearest", caliper = 0.1)
+
+summary(match.out.2)$nn #matches unit results
+summary(match.out.3)$nn
+bal.tab(match.out.2, thresholds = c(m = 0.1)) #balance table
+bal.tab(match.out.3, thresholds = c(m = 0.1))
+```
+
+```{r}
+love.plot(match.out.2, thresholds = c(m = 0.1), line = TRUE) #without replacement, no caliper
+love.plot(match.out.3, thresholds = c(m = 0.1), line = TRUE) #without replacement, caliper = 0.1
+```
+
+After checking the love plots and balance tables, we can find that after the caplier, the balanced count increase, all the units are within the $0.1$ caplier. However, the cost is that we sacrificed another 70 more effective sample size (ESS in the table).
+
+### Q4: Which design would you choose, and on what grounds?
+
+I'd choose match.out.3 because adding the caliper gets rid of the bad covariate imbalance we saw with match.out.2, and it still has more effective control observations than match.out.1, even though the cost is that it matches fewer treated units overall.

@@ -1,0 +1,166 @@
+---
+title: "ps3_Puqiu"
+author: "Puqiu Zhao"
+format: html
+editor: visual
+---
+
+```{r}
+#| message: false
+library(tidyverse)
+library(dagitty)
+library(rdrobust)
+```
+
+## Part 1
+
+```{r}
+unit <- c(1, 2, 3, 4)
+X <- c(0, 1, 0, 1)
+D <- c(1, 1, 0, 0)
+Y_obs <- c(6, 9, 4, 7)
+table_1 <- tibble(unit, X, D, Y_obs)
+table_1
+```
+
+### Q1: Compute the naive $\textbf{DiM}$
+
+```{r}
+table_1 |> 
+  summarise(DiM = mean(Y_obs[D == 1]) - mean(Y_obs[D == 0]))
+```
+
+### Q2: Should you adjust for $X$ here to remove bias? Why or why not?
+
+```{r}
+g_unbias <- dagitty(
+  "dag{D -> Y_obs;
+  X -> Y_obs}"
+)
+adjustmentSets(g_unbias, "D", "Y_obs")
+```
+
+We should not adjust for $X$, because there is no evidence to say that $X$ is a confounder of $D$ and $Y_{obs}$. Therefore, there is no backdoor path between $X$ and $D$.
+
+### Q3: Give one reason you might consider adjusting for $X$
+
+From the table, we can see that $X$ is a predictor of $Y_{obs}$. If we adjust it in the regression, the coefficient of $X$ will explain away some variance of $Y_{obs}$. Therefore, adjusting for $X$ could get a more precise effect of $D$ on $Y_{obs}$. However, we need to make sure that $X$ is a pre-treatment variable at first.
+
+### Q4: Why does it matter whether $X$ is pre-treatment or post-treatment? Is $Y$ post-treatment? Does this create a problem?
+
+First, $Y$ is always post-treatment by definition in a potential outcomes. Second, $X$ must be pre-treatment. If not, there will be two potential outcomes: $$D \rightarrow X \rightarrow Y \; \text{or} \; D \rightarrow X \leftarrow u \rightarrow Y$$There will be potential mediator and collider bias, therefore we need to make sure that $X$ is a pre-treatment variable before adjusting for $X$.
+
+## Part 2
+
+```{r}
+unit <- c(1:6)
+X <- c(-0.3, -0.1, -0.05, 0.05, 0.1, 0.3)
+D <- c(0, 0, 0, 1, 1, 1)
+Y_obs <- c(2.1, 2.6, 2.8, 3.7, 3.9, 4.4)
+table_2 <- tibble(unit, X, D, Y_obs)
+table_2
+```
+
+### Q1: Sketch $Y$ against $X$; mark the cutoff
+
+```{r}
+ggplot(table_2, aes(x = X, y = Y_obs, color = factor(D))) +
+  geom_point(size = 2) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(x = "Running variable (X)", y = "Y_obs", color = "Treated (D)")
+```
+
+### Q2: Eyeball the jump at 𝑐 = 0. Roughly how big?
+
+Around $1.0$
+
+### Q3: Would a wider bandwidth raise or lower your confidence? Your estimate?
+
+It is a trade-off. A wider bandwidth includes more observations, which reduces standard errors. However, it may increase bias if the true relationship between the running variable (X) and the outcome (Y) is nonlinear far from the cutoff, violating the local linearity assumption.
+
+## Part 3
+
+```{r}
+set.seed(104132604) #the same simulated example in the lecture
+n <- 1000
+x <- runif(n, -1, 1)  # running variable
+D <- as.integer(x >= 0)  # sharp assignment
+tau <- 0.4  # true jump at the cutoff
+y <- 0.5 + 1.2 * x + tau * D + rnorm(n, sd = 0.3)
+rd <- tibble(x, D, y)
+head(rd) #for checking
+```
+
+### Q1: Re-estimate $\hat{\tau}$ at h = 0.1 and h = 0.3. How much does it move?
+
+```{r}
+# h = 0.1
+rd |> filter(abs(x) <= 0.1) |>
+  summarise(tau = mean(y[D == 1]) - mean(y[D == 0]),
+            se = sqrt(var(y[D == 1])/sum(D == 1) + var(y[D == 0])/sum(D == 0))
+            ) #tau and standard error
+
+
+# h = 0.3
+rd |> filter(abs(x) <= 0.3) |>
+  summarise(tau = mean(y[D == 1]) - mean(y[D == 0]),
+            se = sqrt(var(y[D == 1])/sum(D == 1) + var(y[D == 0])/sum(D == 0))
+  ) #tau and standard error
+```
+
+At h = 0.1, $\hat{\tau}$ = 0.4, which is close to the true value of 0.4. At h = 0.3, $\hat{\tau}$ = 0.78, moving by roughly 0.38. Meanwhile, at h = 0.1, the standard error is roughly around 0.04, which is larger than the standard error (0.03) when h = 0.3.
+
+### Q2: Add a placebo: create a fake outcome that shouldn’t jump at $\textbf{c}$, and check
+
+```{r}
+set.seed(104132604)
+y_placebo <- 0.5 + 1.2 * x + rnorm(n, sd = 0.3)  #remove D
+rd_placebo <- rd |> mutate(y_placebo = y_placebo)
+
+rd_placebo |> filter(abs(x) <= 0.1) |> #h = 0.1
+  summarise(tau = mean(y_placebo[D == 1]) - mean(y_placebo[D == 0]))
+
+rdplot(
+  y = y_placebo,
+  x = x,
+  c = 0,
+  title = "Placebo Regression Discontinuity Plot",
+  x.label = "Running Variable X",
+  y.label = "Placebo Outcome"
+)
+```
+
+From both the estimation results and the RD plot, we can see that there is no longer a discontinuity at the cutoff. The estimated jump at the cutoff is approximately zero.
+
+### Q3: Fit a global 4th-order polynomial instead. Compare to local linear near $C$.
+
+```{r}
+fit_global <- lm(y ~ D * poly(x, 4, raw = TRUE), data = rd) #global 4th-order polynomial
+tau_global <- coef(fit_global)["D"] #global treatment effect
+
+rd_res <- rdrobust(y = rd$y, x = rd$x, c = 0)
+tau_local <- rd_res$coef[3]
+
+tibble(
+  Method = c("Global (4th-order polynomial)", "Local(rdrobust)"),
+  Estimate = c(tau_global, tau_local)
+)
+```
+
+The global polynomial estimate is similar to the local linear RD estimate in this simulation. However, high-order global polynomials can be sensitive because observations far away from the cutoff affect the fitted function near the threshold.
+
+```{r}
+rd |>
+  mutate(y_pred = predict(fit_global)) |>
+  ggplot(aes(x = x, y = y, color = factor(D))) +
+  geom_point(alpha = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_line(aes(y = y_pred, group = factor(D)), color = "red") +
+  geom_smooth(data = filter(rd, abs(x) <= 0.1), method = "lm", color = "blue", se = FALSE) +
+  labs(title = "Global (Red) vs Local (Blue) Fit",
+       x = "Running Variable X", y = "Outcome", color = "Treated(D)")
+```
+
+### Q4. Which design would you trust, and why?
+
+I would trust the local linear RD design more. It focuses on observations close to the cutoff, which better matches the RD identification assumption that units just around the threshold are comparable. Global polynomial models can be sensitive to the choice of polynomial order and may give excessive influence to observations far from the cutoff.
